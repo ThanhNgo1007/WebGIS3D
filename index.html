@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGIS Pro: 3D Tiles 1.1 Standard</title>
+    
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+    <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    
+    <style>
+        /* --- PHẦN CSS: GIAO DIỆN NGƯỜI DÙNG --- */
+        body, html { width: 100%; height: 100%; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        
+        /* Khung bản đồ */
+        #cesiumContainer { width: 100%; height: 100%; margin-left: 320px; /* Chừa chỗ cho Sidebar */ }
+        
+        /* Sidebar điều khiển bên trái */
+        #sidebar {
+            position: absolute; top: 0; left: 0; bottom: 0; width: 320px;
+            background: #ffffff; border-right: 1px solid #ccc;
+            padding: 20px; z-index: 100; box-shadow: 4px 0 15px rgba(0,0,0,0.1);
+            display: flex; flex-direction: column; overflow-y: auto;
+        }
+        
+        /* Các thành phần UI */
+        h2 { margin: 0 0 10px 0; color: #0078d4; border-bottom: 2px solid #0078d4; padding-bottom: 10px; font-size: 18px; }
+        .section-header { font-size: 13px; font-weight: bold; background: #f3f2f1; padding: 8px; margin: 15px 0 10px 0; color: #333; border-radius: 4px; }
+        .form-group { margin-bottom: 12px; }
+        label { display: block; font-size: 12px; font-weight: 600; color: #444; margin-bottom: 4px; }
+        input[type="text"], textarea, input[type="file"] { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        
+        /* Thanh trượt Scale */
+        input[type="range"] { width: 100%; cursor: pointer; }
+        .scale-display { float: right; font-weight: bold; color: #0078d4; font-size: 12px; }
+
+        /* Nút bấm */
+        button { width: 100%; padding: 10px; margin-top: 5px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        .btn-blue { background: #0078d4; color: white; } .btn-blue:hover { background: #005a9e; }
+        .btn-green { background: #107c10; color: white; } .btn-green:hover { background: #0b5a0b; }
+        .btn-red { background: #d13438; color: white; margin-top: auto; }
+        
+        /* --- POPUP THÔNG TIN (METADATA) --- */
+        /* Lớp nền đen mờ */
+        #overlay { display: none; position: absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.4); z-index: 999; }
+        /* Bảng thông tin chính */
+        #infoPanel {
+            display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 400px; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); z-index: 1000;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="sidebar">
+        <h2>🌐 WebGIS Quản Lý 3D</h2>
+        <button class="btn-blue" onclick="flyToNinhKieu()">✈️ Về Bến Ninh Kiều</button>
+
+        <div class="section-header">1. NHẬP LIỆU & CẤU HÌNH</div>
+        
+        <div class="form-group">
+            <label>Chọn File (.glb)</label>
+            <input type="file" id="inpFile" accept=".glb,.gltf,.png,.jpg">
+        </div>
+        
+        <div class="form-group">
+            <label>Tên đối tượng</label>
+            <input type="text" id="inpName" placeholder="Ví dụ: Tôm Càng Xanh">
+        </div>
+        
+        <div class="form-group">
+            <label>Tỷ lệ phóng to (Scale): <span id="scaleVal" class="scale-display">100</span>x</label>
+            <input type="range" id="inpScale" min="1" max="500" value="100" oninput="document.getElementById('scaleVal').innerText = this.value">
+        </div>
+
+        <div class="form-group">
+            <label>Mô tả (Metadata)</label>
+            <textarea id="inpDesc" rows="2" placeholder="Thông tin thuộc tính..."></textarea>
+        </div>
+
+        <div class="section-header">2. ĐỊNH VỊ & RENDER</div>
+        <div class="form-group">
+            <label>Tọa độ (Lon/Lat)</label>
+            <div style="display:flex; gap:5px;">
+                <input type="text" id="inpLon" readonly style="background:#eee">
+                <input type="text" id="inpLat" readonly style="background:#eee">
+            </div>
+        </div>
+
+        <button class="btn-green" onclick="startPicking()">🖱️ CHỌN VỊ TRÍ TRÊN BẢN ĐỒ</button>
+        <button class="btn-red" onclick="resetSystem()">🗑️ Xóa Dữ Liệu & Reset</button>
+    </div>
+
+    <div id="cesiumContainer"></div>
+
+    <div id="overlay" onclick="closePopup()"></div>
+    
+    <div id="infoPanel">
+        <h3 style="margin-top:0; color:#0078d4;">📝 Metadata Info</h3>
+        <label>Tên đối tượng:</label> <input type="text" id="editName" class="form-group">
+        <label>Mô tả:</label> <textarea id="editDesc" rows="3" class="form-group"></textarea>
+        <input type="hidden" id="editId"> <div style="display:flex; gap:10px; margin-top:15px;">
+            <button class="btn-blue" onclick="saveUpdate()">Cập nhật</button>
+            <button class="btn-red" style="margin:0" onclick="deleteItem()">Xóa</button>
+            <button style="background:#888; color:white; margin:0" onclick="closePopup()">Đóng</button>
+        </div>
+    </div>
+
+    <script type="module">
+        // ============================================================
+        // 1. CẤU HÌNH HỆ THỐNG & KHỞI TẠO BẢN ĐỒ
+        // ============================================================
+        Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI4ZjdmYjY4MS05YmM2LTRkZTgtYTUyMC0xYzhlOTE3N2EwNjIiLCJpZCI6Mzc4MzM3LCJpYXQiOjE3NjgzNjkxMTJ9.5PdIXm67qggL6I0GvrR1UcRmmrSihLcNNJTaLqzAUZU";
+
+        const viewer = new Cesium.Viewer('cesiumContainer', {
+            terrain: Cesium.Terrain.fromWorldTerrain(), // Load địa hình 3D
+            shouldAnimate: true, // Bật animation (để tôm bơi nếu có chuyển động)
+            baseLayerPicker: false, animation: false, timeline: false, 
+            selectionIndicator: false, infoBox: false, shadows: true
+        });
+
+        // Hàm bay về Cần Thơ
+        window.flyToNinhKieu = () => {
+            viewer.camera.flyTo({
+                destination: Cesium.Cartesian3.fromDegrees(105.7845, 10.0340, 600),
+                orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }
+            });
+        };
+
+        // ============================================================
+        // 2. QUẢN LÝ CƠ SỞ DỮ LIỆU (INDEXEDDB)
+        // ============================================================
+        const DB_NAME = "WebGIS_Final_DB";
+        let db;
+        const objectUrls = {}; // Biến để lưu trữ link ảo (giúp dọn rác bộ nhớ)
+
+        const request = indexedDB.open(DB_NAME, 2);
+        request.onupgradeneeded = e => {
+            db = e.target.result;
+            // Tạo bảng "items" với khóa chính là "id"
+            if(!db.objectStoreNames.contains("items")) db.createObjectStore("items", {keyPath: "id"});
+        };
+        request.onsuccess = e => {
+            db = e.target.result;
+            loadAllData(); // Load dữ liệu cũ ngay khi mở web
+        };
+
+        function saveToDB(item) {
+            db.transaction("items", "readwrite").objectStore("items").put(item);
+        }
+
+        async function loadAllData() {
+            const tx = db.transaction("items", "readonly");
+            let isFirst = true;
+            tx.objectStore("items").openCursor().onsuccess = e => {
+                const c = e.target.result;
+                if(c) { 
+                    renderItem(c.value); // Render từng đối tượng
+                    
+                    // Tự động bay tới đối tượng đầu tiên để người dùng thấy
+                    if(isFirst) {
+                        viewer.camera.flyTo({
+                            destination: Cesium.Cartesian3.fromDegrees(c.value.x, c.value.y, 800),
+                            orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }
+                        });
+                        isFirst = false;
+                    }
+                    c.continue(); 
+                }
+            }
+        }
+
+        // ============================================================
+        // 3. CORE ENGINE: RENDER & CHUẨN HÓA DATA
+        // ============================================================
+        async function renderItem(item, flyTo = false) {
+            // A. Dọn dẹp đối tượng cũ (nếu render lại)
+            viewer.entities.removeById(item.id.toString());
+            const primitives = viewer.scene.primitives;
+            for(let i=0; i<primitives.length; i++) {
+                if(primitives.get(i).dbId === item.id) { primitives.remove(primitives.get(i)); break; }
+            }
+            if (objectUrls[item.id]) URL.revokeObjectURL(objectUrls[item.id]);
+
+            // Tạo URL ảo cho file file nhị phân (Blob)
+            const blobUrl = URL.createObjectURL(item.file);
+            objectUrls[item.id] = blobUrl;
+
+            // B. XỬ LÝ 3D TILES (Nếu là file model)
+            if (item.type === 'model') {
+                
+                // --- BƯỚC 1: CHUẨN HÓA DATA (Dynamic Tiling) ---
+                // Tạo cấu trúc JSON tuân thủ chuẩn OGC 3D Tiles 1.1
+                const tilesetJson = {
+                    "asset": { 
+                        "version": "1.1",       // Chuẩn mới nhất
+                        "gltfUpAxis": "Y",      // Trục đứng của model
+                        // Metadata (Siêu dữ liệu) được nhúng thẳng vào file
+                        "extras": { "name": item.name, "desc": item.desc } 
+                    },
+                    "geometricError": 4096,     // Sai số hình học (LOD)
+                    "root": {
+                        "boundingVolume": { "sphere": [0,0,0, 10000] }, // Khối bao
+                        "refine": "ADD",
+                        "content": { "uri": blobUrl } // Nhúng trực tiếp GLB (Feature của 1.1)
+                    }
+                };
+
+                // Tạo "File ảo" từ JSON
+                const jsonBlob = new Blob([JSON.stringify(tilesetJson)], {type: 'application/json'});
+                const tilesetUrl = URL.createObjectURL(jsonBlob);
+
+                try {
+                    // Gọi Loader chuyên dụng của Cesium
+                    const tileset = await Cesium.Cesium3DTileset.fromUrl(tilesetUrl, { enableCollision: true });
+
+                    // --- BƯỚC 2: CHUẨN HÓA VỊ TRÍ (Georeferencing) ---
+                    const cartographic = Cesium.Cartographic.fromDegrees(item.x, item.y);
+                    let terrainHeight = 0;
+                    
+                    try {
+                        // Kỹ thuật Async: Đợi load xong độ cao đất chính xác rồi mới gán
+                        const updatedPositions = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [cartographic]);
+                        terrainHeight = updatedPositions[0].height;
+                    } catch (err) {
+                        console.log("Dùng độ cao mặc định do chưa load được terrain.");
+                        terrainHeight = viewer.scene.globe.getHeight(cartographic) || 0;
+                    }
+
+                    // --- BƯỚC 3: TÍNH TOÁN MA TRẬN (Matrix Transformation) ---
+                    // 3.1. Ma trận Vị trí (Dời từ tâm Trái Đất ra Cần Thơ & Xoay đúng hướng)
+                    const position = Cesium.Cartesian3.fromDegrees(item.x, item.y, terrainHeight);
+                    const modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(position);
+                    
+                    // 3.2. Ma trận Scale (Phóng to kích thước)
+                    const scaleVal = parseFloat(item.scale) || 100.0;
+                    const scaleMatrix = Cesium.Matrix4.fromUniformScale(scaleVal);
+                    
+                    // 3.3. Nhân 2 ma trận lại với nhau (Gộp phép biến đổi)
+                    Cesium.Matrix4.multiply(modelMatrix, scaleMatrix, modelMatrix);
+
+                    // Áp dụng ma trận vào đối tượng
+                    tileset.modelMatrix = modelMatrix;
+                    tileset.dbId = item.id; // Gán ID để sau này xóa/sửa được
+                    tileset.dbData = item;  // Gán data gốc để hiện popup
+
+                    // Thêm vào tầng Primitives (Hiệu năng cao)
+                    viewer.scene.primitives.add(tileset);
+                    
+                    if(flyTo) viewer.zoomTo(tileset);
+
+                } catch (e) {
+                    console.error("Lỗi load 3D Tiles:", e);
+                    renderEntityFallback(item, blobUrl); // Nếu lỗi thì dùng cách cũ
+                }
+            } else {
+                renderEntityFallback(item, blobUrl); // Nếu là ảnh
+            }
+        }
+
+        // Hàm dự phòng (Fallback) dùng Entity đơn giản
+        function renderEntityFallback(item, url) {
+            viewer.entities.add({
+                id: item.id.toString(),
+                position: Cesium.Cartesian3.fromDegrees(item.x, item.y),
+                billboard: {
+                    image: url, width: 64, height: 64,
+                    verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                    heightReference: Cesium.HeightReference.CLAMP_TO_GROUND
+                },
+                properties: { dbData: item }
+            });
+        }
+
+        // ============================================================
+        // 4. LOGIC TƯƠNG TÁC (INTERACTION)
+        // ============================================================
+        let isPicking = false;
+
+        // Bắt đầu chế độ chọn điểm
+        window.startPicking = () => {
+            if(!document.getElementById('inpFile').files[0]) return alert("⚠️ Hãy chọn file 3D trước!");
+            isPicking = true;
+            viewer.canvas.style.cursor = "crosshair"; // Đổi con trỏ chuột
+        };
+
+        // Sự kiện Click chuột trái
+        const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+        handler.setInputAction(async (click) => {
+            if (isPicking) {
+                // --- LOGIC 1: CHỌN VỊ TRÍ (PICKING) ---
+                let cartesian = viewer.scene.pickPosition(click.position);
+                if (!cartesian) cartesian = viewer.camera.pickEllipsoid(click.position);
+
+                if (cartesian) {
+                    // Chuyển tọa độ XYZ sang Kinh/Vĩ độ
+                    const c = Cesium.Cartographic.fromCartesian(cartesian);
+                    const lon = Cesium.Math.toDegrees(c.longitude);
+                    const lat = Cesium.Math.toDegrees(c.latitude);
+
+                    // Điền vào form
+                    document.getElementById('inpLon').value = lon.toFixed(6);
+                    document.getElementById('inpLat').value = lat.toFixed(6);
+
+                    // Thu thập dữ liệu từ Form
+                    const fileInput = document.getElementById('inpFile');
+                    const item = {
+                        id: Date.now(), // Tạo ID duy nhất bằng thời gian
+                        name: document.getElementById('inpName').value || "Đối tượng mới",
+                        desc: document.getElementById('inpDesc').value || "Chưa có mô tả",
+                        scale: document.getElementById('inpScale').value,
+                        type: fileInput.files[0].name.match(/\.glb$/i) ? 'model' : 'image',
+                        file: fileInput.files[0],
+                        x: lon, y: lat
+                    };
+
+                    saveToDB(item);       // Lưu vào DB
+                    await renderItem(item, true); // Vẽ lên bản đồ ngay
+
+                    // Reset trạng thái
+                    isPicking = false;
+                    viewer.canvas.style.cursor = "default";
+                    document.getElementById('inpName').value = "";
+                    document.getElementById('inpFile').value = "";
+                }
+            } else {
+                // --- LOGIC 2: XEM THÔNG TIN (SELECTING) ---
+                const picked = viewer.scene.pick(click.position);
+                if (Cesium.defined(picked)) {
+                    // Lấy data từ 3D Tiles hoặc Entity
+                    let data = null;
+                    if (picked.content?.tileset?.dbData) {
+                        data = picked.content.tileset.dbData; // Lấy từ 3D Tiles
+                    } else if (picked.id?.properties?.dbData) {
+                        data = picked.id.properties.dbData.getValue(); // Lấy từ Entity
+                    }
+                    
+                    if (data) openPopup(data);
+                }
+            }
+        }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+        // ============================================================
+        // 5. CÁC HÀM TIỆN ÍCH UI
+        // ============================================================
+        window.resetSystem = () => {
+            if(confirm("Bạn có chắc muốn xóa sạch dữ liệu?")) {
+                indexedDB.deleteDatabase(DB_NAME);
+                location.reload();
+            }
+        };
+
+        window.openPopup = (d) => {
+            document.getElementById('editId').value = d.id;
+            document.getElementById('editName').value = d.name;
+            document.getElementById('editDesc').value = d.desc;
+            
+            // Hiện Popup
+            document.getElementById('infoPanel').style.display = 'block';
+            document.getElementById('overlay').style.display = 'block';
+        };
+
+        // --- HÀM ĐÓNG POPUP (ĐÃ FIX) ---
+        window.closePopup = () => { 
+            document.getElementById('infoPanel').style.display = 'none'; 
+            document.getElementById('overlay').style.display = 'none'; 
+        };
+        
+        window.deleteItem = () => {
+            const id = parseInt(document.getElementById('editId').value);
+            db.transaction("items", "readwrite").objectStore("items").delete(id).onsuccess = () => {
+                closePopup();
+                location.reload();
+            }
+        };
+
+        window.saveUpdate = () => {
+            const id = parseInt(document.getElementById('editId').value);
+            // Lấy item cũ từ DB, sửa lại info rồi lưu đè
+            db.transaction("items", "readwrite").objectStore("items").get(id).onsuccess = e => {
+                const item = e.target.result;
+                item.name = document.getElementById('editName').value;
+                item.desc = document.getElementById('editDesc').value;
+                saveToDB(item); 
+                closePopup();
+                location.reload();
+            }
+        };
+    </script>
+</body>
+</html>
